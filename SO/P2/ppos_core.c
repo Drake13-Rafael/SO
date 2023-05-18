@@ -4,20 +4,10 @@
 
 // Demonstração das funções POSIX de troca de contexto (ucontext.h).
 
-// operating system check
-#if defined(_WIN32) || (!defined(__unix__) && !defined(__unix) && (!defined(__APPLE__) || !defined(__MACH__)))
-#warning Este codigo foi planejado para ambientes UNIX (LInux, *BSD, MacOS). A compilacao e execucao em outros ambientes e responsabilidade do usuario.
-#endif
 
-#define _XOPEN_SOURCE 600	/* para compilar no MacOS */
-
-//#ifdef DEBUG
-//printf ("task_init: iniciada tarefa %d\n", task->id) ;
-//#endif
-
-#include "ppos_data.h"
 #include "ppos.h"
 #include "queue.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ucontext.h>
@@ -25,28 +15,31 @@
 #define STACKSIZE 64*1024
 
 int tasks_ids = 0;
-task_t t_main, *task_antiga, t_dispatcher, *proxima_tarefa, *fila_tasks ;
+task_t t_main, *task_anterior, t_dispatcher, *fila_tasks ;
 
 void ppos_init(){
 
-    getcontext(&t_main.context);
+    setvbuf (stdout, 0, _IONBF, 0) ;
 
     t_main.id = 0;
+    t_main.status = 1;
 
-    task_antiga = &t_main;
+    getcontext(&(t_main.context));
+
+    task_anterior = &t_main;
 
     queue_append((queue_t **) &fila_tasks, (queue_t*) &t_main);
 
     task_init(&t_dispatcher, dispatcher, "TASK YIELD");
 
-    setvbuf (stdout, 0, _IONBF, 0) ;
+    task_yield();
 }
 
 int task_init (task_t *task, void  (*start_func)(void *), void   *arg){
 
     char *stack ;
 
-    getcontext (&task->context) ;
+    getcontext (&(task->context)) ;
 
     stack = malloc (STACKSIZE) ;
     if (stack)
@@ -62,7 +55,7 @@ int task_init (task_t *task, void  (*start_func)(void *), void   *arg){
        exit (1) ;
     }
 
-    makecontext (&task->context, (void*)(*start_func), 1, arg) ;
+    makecontext (&(task->context), (void*)(*start_func), 1, arg) ;
 
     tasks_ids+=1;
     task->id = tasks_ids;
@@ -72,7 +65,13 @@ int task_init (task_t *task, void  (*start_func)(void *), void   *arg){
     printf ("task_init: %d\n", task->id) ;
     #endif
 
-    queue_append((queue_t **) &fila_tasks, (queue_t*) task);
+    if(&t_dispatcher != task){
+        if(!(queue_append((queue_t **) &fila_tasks, (queue_t*) task))){
+            #ifdef DEBUG
+                printf ("Task %d adicionada a fila\n", task->id);
+            #endif
+        }
+    }
 
     return task->id;
 }
@@ -82,25 +81,29 @@ int task_switch (task_t *task){
     if(!task)
         exit(-1);
 
+    task_t *aux = task_anterior;
+
+    task_anterior = task;
+
     #ifdef DEBUG
-    printf ("task_switch: %d para %d\n", task_antiga->id, task->id) ;
+        printf("saindo da tarefa %d e indo para tarefa %d \n", aux->id, task->id);
     #endif
 
-   task_antiga = task;
+    swapcontext(&(aux->context), &(task->context));
 
-    swapcontext(&task_antiga->context, &task->context);
     return (0);
 }
 
 void task_exit (int exit_code){
 
-    task_antiga->status = 3;
+    task_anterior->status = 3;
 
-    if(task_antiga->id == 0)
-        task_yield();
-    else if(task_antiga->id == 1)
+    if(task_anterior->id == 1){
         exit(0);
-
+    }
+    else{
+        task_yield();
+    }
 }
 
 void task_yield (){
@@ -108,25 +111,20 @@ void task_yield (){
 }
 
 task_t *scheduler(){
-    task_t *andador = fila_tasks;
-    if(!andador){
-        return NULL; //Fila vazia.
-    }
-    task_t *ini = fila_tasks;
-    while(andador->next != ini){ //Faz a iteração até achar o ultimo elemento da fila.
-        if((andador->status == 1) && ((andador->id != 1)&&(andador->id != 0)))
-            return andador;
-        andador = andador->next;
-    }
-    return ini;
+
+    task_t *aux = fila_tasks;
+
+    fila_tasks = fila_tasks->next;
+    
+    return aux;
 }
 
 void dispatcher(){
    // enquanto houverem tarefas de usuário
-    #ifdef DEBUG
-        printf ("dispatcher to aqui com %d elementos na fila \n", queue_size((queue_t*) &fila_tasks)) ;
-    #endif
-    while(queue_size((queue_t*) &fila_tasks) > 1){
+
+    task_t *proxima_tarefa = NULL;
+
+    while(queue_size((queue_t*) fila_tasks) > 0){
 
       // escolhe a próxima tarefa a executar
         proxima_tarefa = scheduler();
@@ -145,14 +143,14 @@ void dispatcher(){
                 case 3:
                     queue_remove ((queue_t **)&fila_tasks, (queue_t *) proxima_tarefa);
                     break;
-                case 2:
-                    proxima_tarefa->status = 1;
-                    break;
+                default:
             }        
         }
+        #ifdef DEBUG
+            printf ("%d elementos na fila \n", queue_size((queue_t*) fila_tasks)) ;
+        #endif
     }
 
-   // encerra a tarefa dispatcher
-   //task_exit(0);
+   task_exit(0); // encerra a tarefa dispatcher
 
 }

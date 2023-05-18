@@ -19,6 +19,9 @@ typedef struct task_t
   short status ;			// pronta, rodando, suspensa, ...
   short prioridade_estatica;
   short prioridade_dinamica;
+  unsigned long int tempo_processamento;
+  unsigned long int tempo_execucao;
+  unsigned long int ativacoes;
   // ... (outros campos serão adicionados mais tarde)
 } task_t ;
 

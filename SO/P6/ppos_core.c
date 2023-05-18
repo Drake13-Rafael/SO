@@ -18,10 +18,14 @@
 
 #define STACKSIZE 64*1024
 #define MAXQUANTUM 20
+#define MAIORPRIO -20
+#define MENORPRIO 20
 
 //quantum é variavel limite de tempo para todas as tarefas de usuario
 // a flag é para saber se quem está executando é o usuário ou o sistema
 int tasks_ids = 0, flag_sistema_usuario = 0, quantum = MAXQUANTUM; 
+// Relogio global do sistema
+unsigned int relogio = 0;
 
 // task_atual é a tarefa que está em execução no momento, t_dispatcher é a tarefa do dispatcher, fila_tasks é a fila de tarefas
 // t_main é a tarefa da main
@@ -35,7 +39,9 @@ struct itimerval timer;
 // tratador do sinal
 void tratador (int signum)
 {
+    relogio += 1;
     if(flag_sistema_usuario){ //Testa se a interrupção está numa tarefa de sistema(0) ou de usuário(1)
+        task_atual->tempo_processamento += 1; // Aumenta o tempo de processamento das tarefas de usuario
         if(quantum > 1){    // Drecementa o quantum caso o quantum não tenha chego em zero
             quantum -= 1; 
         }
@@ -45,6 +51,11 @@ void tratador (int signum)
             task_yield();
         }
     }
+}
+
+// Retorna o tempo do sistema
+unsigned int systime (){
+    return relogio; 
 }
 
 // Inicializa o sistema e as variaveis globais com seus respectivos valores setados
@@ -57,6 +68,9 @@ void ppos_init(){
     t_main.status = 1;
     t_main.prioridade_estatica = 0;
     t_main.prioridade_dinamica = t_main.prioridade_estatica;
+    t_main.ativacoes = 0;
+    t_main.tempo_execucao = 0;
+    t_main.tempo_processamento = 0;
 
     getcontext(&(t_main.context));
     
@@ -125,6 +139,9 @@ int task_init (task_t *task, void  (*start_func)(void *), void   *arg){
     task->status = 1; // Status 1 é PRONTA
     task->prioridade_estatica = 0; // Prioridade default(0)
     task->prioridade_dinamica = task->prioridade_estatica;
+    task->ativacoes = 0; // Seta as ativações da tarefa para nenhuma
+    task->tempo_execucao = systime(); // Começo de cada tarefa no momento do relogio
+    task->tempo_processamento = 0; // Processamento de cada tarefa começa em zero
 
     #ifdef DEBUG
     printf ("task_init: %d\n", task->id) ;
@@ -147,13 +164,14 @@ int task_switch (task_t *task){
     if(!task) // Se a tarefa passada nao existir da erro
         exit(-1);
 
+    task->ativacoes += 1; // Aumenta a ativação de cada tarefa cada vez que ela é chamada(troca o contexto para ela)
     task_t *aux = task_atual; // Seta um auxiliar para salvar qual é a tarefa antiga
 
     task_atual = task;
 
-    #ifdef DEBUG
+    /*#ifdef DEBUG
         printf("saindo da tarefa %d e indo para tarefa %d \n", aux->id, task->id);
-    #endif
+    #endif*/
     
     if(task->id > 1){ // Se a tarefa passada for de usuário (tarefas de sistema são 0 e 1 que é main e dispatcher)
         flag_sistema_usuario = 1; // Seta a flag para tarefas de usuario
@@ -165,6 +183,13 @@ int task_switch (task_t *task){
 
 // Ao terminar de executar a tarefa chama o exit que trata de acordo com o tipo de tarefa
 void task_exit (int exit_code){
+
+    task_atual->tempo_execucao = systime() - task_atual->tempo_execucao;
+
+    // Mostra o tempo de execução, processamento e as ativações de cada tarefa
+    #ifdef DEBUG
+        printf("task %d exit: execution time %ld ms, processor time %ld ms, %ld activations\n", task_atual->id, task_atual->tempo_execucao, task_atual->tempo_processamento, task_atual->ativacoes);
+    #endif
 
     flag_sistema_usuario = 0; // Volta a flag para tarefa de sistema
     quantum = MAXQUANTUM; // Reseta o quantum para a proxima tarefa
@@ -189,22 +214,22 @@ void task_setprio (task_t *task, int prio){
 
     if (!task) // Se não tiver passado nenhuma tarefa então seta a prioridade da tarefa atual
     {
-        if(prio > 20){ // Testes para saber se a prioridade foi passada corretamente
+        if(prio > MENORPRIO){ // Testes para saber se a prioridade foi passada corretamente
             fprintf(stderr, "##Erro de tamanho da prioridade, será setada para 20\n");
-            task_atual->prioridade_estatica = 20;
-        }else if(prio < -20){
+            task_atual->prioridade_estatica = MENORPRIO;
+        }else if(prio < MAIORPRIO){
             fprintf(stderr, "##Erro de tamanho da prioridade, será setada para -20\n");
-            task_atual->prioridade_estatica = -20;
+            task_atual->prioridade_estatica = MAIORPRIO;
         }else
             task_atual->prioridade_estatica = prio;
     }
     else{
-        if(prio > 20){ // Testes para saber se a prioridade foi passada corretamente
+        if(prio > MENORPRIO){ // Testes para saber se a prioridade foi passada corretamente
             fprintf(stderr, "##Erro de tamanho da prioridade, será setada para 20\n");
-            task->prioridade_estatica = 20;
-        }else if(prio < -20){
+            task->prioridade_estatica = MENORPRIO;
+        }else if(prio < MAIORPRIO){
             fprintf(stderr, "##Erro de tamanho da prioridade, será setada para -20\n");
-            task->prioridade_estatica = -20;
+            task->prioridade_estatica = MAIORPRIO;
         }else
             task->prioridade_estatica = prio;
     }
@@ -234,12 +259,12 @@ task_t *scheduler(){
 
     while(fila_tasks != ini){ //Faz a iteração até achar o ultimo elemento da fila.
         if(fila_tasks->prioridade_dinamica < aux->prioridade_dinamica){ // Caso a prioridade do item atual seja menor que o menor
-            if(aux->prioridade_dinamica > -20) // Teste para saber o limite de prioridade
+            if(aux->prioridade_dinamica > MAIORPRIO) // Teste para saber o limite de prioridade
                 aux->prioridade_dinamica -= 1; // Diminui a prioridade do ex-menor
             aux = fila_tasks; // Troca o menor para atual
         }
         else{ 
-            if(fila_tasks->prioridade_dinamica > -20) // Teste para saber o limite de prioridade
+            if(fila_tasks->prioridade_dinamica > MAIORPRIO) // Teste para saber o limite de prioridade
                 fila_tasks->prioridade_dinamica -= 1; // Caso não seja menor apenas envelhece sua prioridade
         }
         fila_tasks = fila_tasks->next; // Faz a próxima iteração
@@ -277,15 +302,16 @@ void dispatcher(){
                 default:
             }        
         }
-        #ifdef DEBUG
+        /*#ifdef DEBUG
             printf ("%d elementos na fila \n", queue_size((queue_t*) fila_tasks)) ; // Saber quantos elementos há na fila
-        #endif
+        #endif*/
     }
 
    task_exit(0); // encerra a tarefa dispatcher
 
 }
 
+// Retorna o ID da tarefa atual
 int task_id() {
-    return task_atual->id; // Retorna o ID da tarefa atual
+    return task_atual->id; 
 }

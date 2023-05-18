@@ -34,10 +34,10 @@ int main (int argc, char *argv[])
    ppos_init();
    
    task_init (&Pang, Body, "    Pang") ;
-   //task_init (&Peng, Body, "        Peng") ;
-   //task_init (&Ping, Body, "            Ping") ;
-   //task_init (&Pong, Body, "                Pong") ;
-   //task_init (&Pung, Body, "                    Pung") ;
+   task_init (&Peng, Body, "        Peng") ;
+   task_init (&Ping, Body, "            Ping") ;
+   task_init (&Pong, Body, "                Pong") ;
+   task_init (&Pung, Body, "                    Pung") ;
    
    printf("main: fim\n");
    task_exit(0);
