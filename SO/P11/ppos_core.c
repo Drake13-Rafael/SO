@@ -428,13 +428,15 @@ void task_sleep (int t){
 
 int sem_down(semaphore_t *s){
 
-    if(!s)
+    if(!s || s->destruido)
         return -1;
     
-    if(s->lock == 1)
-        task_suspend(&s->fila);
+    if(s->lock <= 0)
+        task_suspend(&s->fila_sem);
 
-    while (__sync_fetch_and_or (&s->lock, 1));
+    s->lock -= 1;
+
+    while (__sync_fetch_and_or (&s->lock, 0));
 
     if(!s)
         return -1;
@@ -446,10 +448,10 @@ int sem_up(semaphore_t *s){
     if(!s || s->destruido)
         return -1;
 
-    if(queue_size((queue_t*) s->fila) > 0)
-        task_resume(s->fila, &s->fila);
+    if(queue_size((queue_t*) s->fila_sem) > 0)
+        task_resume(s->fila_sem, &s->fila_sem);
 
-    (s->lock) = 0 ;
+    (s->lock) += 1 ;
     return 0;
 }
 
@@ -462,7 +464,7 @@ int sem_init (semaphore_t *s, int value){
 
     s->destruido = 0;
     s->lock = value;
-    s->fila = NULL;
+    s->fila_sem = NULL;
 
     return 0;
 }
@@ -472,13 +474,14 @@ int sem_destroy (semaphore_t *s){
     if(!s || s->destruido)
         return -1;
 
-    acordar_tarefas_semaforo(s->fila);
+    s->lock += queue_size((queue_t*) s->fila_sem);
+
+    acordar_tarefas_semaforo(s->fila_sem);
 
     semaforos_existem -= 1;
 
     s->destruido = 1;
-    s->lock = 0;
-    s->fila = NULL;
+    s->fila_sem = NULL;
     s = NULL;
 
     return 0;

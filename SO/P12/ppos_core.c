@@ -5,7 +5,7 @@
 
 // Demonstração das funções POSIX de troca de contexto (ucontext.h).
 
-// cc -Wall -o teste -DDEBUG ppos_core.c teste.c queue.c
+// cc -Wall -o teste -DDEBUG ppos_core.c teste.c queue.c -lm
 
 #include "ppos.h"
 #include "queue.h"
@@ -15,6 +15,7 @@
 #include <ucontext.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <string.h>
 
 #define STACKSIZE 64*1024
 #define MAXQUANTUM 20
@@ -41,6 +42,9 @@ unsigned int relogio = 0;
 // task_atual é a tarefa que está em execução no momento, t_dispatcher é a tarefa do dispatcher, fila_tasks é a fila de tarefas
 // t_main é a tarefa da main
 task_t t_main, *task_atual, t_dispatcher, *fila_tasks, *fila_suspensas, *fila_adormecidas;
+
+// Semaforos
+semaphore_t s_buffer, s_receiver, s_send;
 
 // estrutura que define um tratador de sinal (deve ser global ou static)
 struct sigaction action ;
@@ -86,6 +90,10 @@ void ppos_init(){
     getcontext(&(t_main.context));
     
     task_atual = &t_main;
+
+    sem_init(&s_buffer, 1);
+    sem_init(&s_receiver, 0);
+    sem_init(&s_send, 1);
 
     // Adiciona a main como tarefa na fila de tarefas
     queue_append((queue_t **) &fila_tasks, (queue_t*) &t_main);
@@ -428,13 +436,15 @@ void task_sleep (int t){
 
 int sem_down(semaphore_t *s){
 
-    if(!s)
+    if(!s || s->destruido)
         return -1;
     
-    if(s->lock == 1)
-        task_suspend(&s->fila);
+    if(s->lock <= 0)
+        task_suspend(&s->fila_sem);
 
-    while (__sync_fetch_and_or (&s->lock, 1));
+    s->lock -= 1;
+
+    while (__sync_fetch_and_or (&s->lock, 0));
 
     if(!s)
         return -1;
@@ -446,10 +456,10 @@ int sem_up(semaphore_t *s){
     if(!s || s->destruido)
         return -1;
 
-    if(queue_size((queue_t*) s->fila) > 0)
-        task_resume(s->fila, &s->fila);
+    if(queue_size((queue_t*) s->fila_sem) > 0)
+        task_resume(s->fila_sem, &s->fila_sem);
 
-    (s->lock) = 0 ;
+    (s->lock) += 1 ;
     return 0;
 }
 
@@ -462,7 +472,7 @@ int sem_init (semaphore_t *s, int value){
 
     s->destruido = 0;
     s->lock = value;
-    s->fila = NULL;
+    s->fila_sem = NULL;
 
     return 0;
 }
@@ -472,15 +482,114 @@ int sem_destroy (semaphore_t *s){
     if(!s || s->destruido)
         return -1;
 
-    acordar_tarefas_semaforo(s->fila);
+    s->lock += queue_size((queue_t*) s->fila_sem);
+
+    acordar_tarefas_semaforo(s->fila_sem);
 
     semaforos_existem -= 1;
 
     s->destruido = 1;
-    s->lock = 0;
-    s->fila = NULL;
+    s->fila_sem = NULL;
     s = NULL;
 
     return 0;
+
+}
+
+int mqueue_init (mqueue_t *queue, int max, int size){
+    
+    if(!queue)
+        return -1;
+    if(queue->destruido)
+        return -2;
+
+    queue->max_msgs = max;
+    queue->msg_size = size;
+    queue->destruido = 0;
+
+    return 0;
+
+}
+
+int mqueue_destroy (mqueue_t *queue){
+
+    if(!queue)
+        return -1;
+    if(queue->destruido)
+        return -2;
+    
+    queue->destruido = 1;
+    queue->fila = NULL;
+    queue->max_msgs = 0;
+    queue->msg_size = 0;
+
+    return 0;
+
+}
+
+int mqueue_send (mqueue_t *queue, void *msg){
+
+    if(!queue)
+        return -1;
+    if(queue->destruido)
+        return -2;
+
+    fila_msg_t *mensagem = malloc(sizeof(struct fila_msg_t));
+    mensagem->prev = NULL;
+    mensagem->next = NULL;
+    mensagem->msg = malloc(queue->msg_size);
+
+    if(queue_size((queue_t *) queue->fila) > queue->max_msgs){
+        sem_down(&s_send);
+
+        sem_down(&s_buffer);
+        memcpy(mensagem->msg, msg, queue->msg_size);
+        queue_append((queue_t **) queue->fila, (queue_t *) mensagem);
+        sem_up(&s_buffer);
+    }else{
+        sem_down(&s_buffer);
+        memcpy(mensagem->msg, msg, queue->msg_size);
+        queue_append((queue_t **) queue->fila, (queue_t *) mensagem);
+        sem_up(&s_buffer);
+    }
+    sem_up(&s_receiver);
+
+    return 0;
+}
+
+int mqueue_recv (mqueue_t *queue, void *msg){
+
+    if(!queue)
+        return -1;
+    if(queue->destruido)
+        return -2;
+
+    if(queue_size((queue_t *) queue->fila) <= 0){
+        sem_down(&s_receiver);
+
+        sem_down(&s_buffer);
+        memcpy(msg, queue->fila->msg, queue->msg_size);
+        queue_remove((queue_t **) queue->fila, (queue_t *) queue->fila);
+        sem_up(&s_buffer);
+    }else{
+        sem_down(&s_buffer);
+        memcpy(msg, queue->fila->msg, queue->msg_size);
+        queue_remove((queue_t **) queue->fila, (queue_t *) queue->fila);
+        sem_up(&s_buffer);
+    }
+    sem_up(&s_send);
+
+    return 0;
+
+}
+
+int mqueue_msgs (mqueue_t *queue){
+
+    if(!queue)
+        return -1;
+    if(queue->destruido)
+        return -2;
+
+    return (queue_size((queue_t *) queue->fila));
 
 }

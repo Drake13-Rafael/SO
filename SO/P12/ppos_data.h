@@ -27,11 +27,18 @@ typedef struct task_t
   // ... (outros campos serão adicionados mais tarde)
 } task_t ;
 
+// Fila das mensagens
+typedef struct fila_msg_t
+{
+  void *msg;
+  struct fila_msg_t *prev, *next;
+} fila_msg_t ;
+
 // estrutura que define um semáforo
 typedef struct semaphore_t
 {
   int lock;
-  task_t *fila;
+  task_t *fila_sem;
   int destruido;
 } semaphore_t ;
 
@@ -48,9 +55,12 @@ typedef struct
 } barrier_t ;
 
 // estrutura que define uma fila de mensagens
-typedef struct
+typedef struct mqueue_t
 {
-  // preencher quando necessário
+  fila_msg_t *fila;
+  int destruido;
+  unsigned long int max_msgs;
+  unsigned long int msg_size;
 } mqueue_t ;
 
 #endif
