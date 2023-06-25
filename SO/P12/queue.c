@@ -45,6 +45,7 @@ void queue_print (char *name, queue_t *queue, void print_elem (void*) ) {
 
 int queue_append (queue_t **queue, queue_t *elem) {
     queue_t *novo = elem;
+    //printf("next elem %p prev %p, next novo %p prev %p \n", elem->next, elem->prev, novo->next, novo->prev);
     if(!novo){
         //perror("Erro de elemento não existe"); //fica a escolha do usuario.
         fprintf(stderr, "##Erro de elemento não existe\n");

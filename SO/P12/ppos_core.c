@@ -46,6 +46,8 @@ task_t t_main, *task_atual, t_dispatcher, *fila_tasks, *fila_suspensas, *fila_ad
 // Semaforos
 semaphore_t s_buffer, s_receiver, s_send;
 
+fila_msg_t *antigo, *aux;
+
 // estrutura que define um tratador de sinal (deve ser global ou static)
 struct sigaction action ;
 // estrutura de inicialização do timer
@@ -92,8 +94,6 @@ void ppos_init(){
     task_atual = &t_main;
 
     sem_init(&s_buffer, 1);
-    sem_init(&s_receiver, 0);
-    sem_init(&s_send, 1);
 
     // Adiciona a main como tarefa na fila de tarefas
     queue_append((queue_t **) &fila_tasks, (queue_t*) &t_main);
@@ -214,6 +214,7 @@ void task_exit (int exit_code){
     task_atual->status = 3; // Seta o status da tarefa que foi encerrada como TERMINADA(3) 
 
     if(task_atual->id == 1){ // Caso a tarefa seja o dispatcher ele sai do programa sem erros
+        sem_destroy(&s_buffer);
         exit(0);
     }
     else{
@@ -365,7 +366,7 @@ void task_suspend(task_t **queue){
     
     if(fila_tasks == task_atual){
         task_atual->status = 2;
-        queue_remove((queue_t **)&fila_tasks, (queue_t *) task_atual);
+        queue_remove((queue_t **) &fila_tasks, (queue_t *) task_atual);
         queue_append((queue_t **) queue, (queue_t *) task_atual);
     }
     task_yield();
@@ -411,11 +412,12 @@ void testa_adormecidas(){
     }
 }
 
+// Função para acordar as tarefas quando um semaforo é destruido
 void acordar_tarefas_semaforo(task_t *fila){
 
     task_t *aux = fila;
     
-    if(fila){
+    if(fila){ // testa se existe a fila e retira todos os elementos dela
         while(queue_size((queue_t*) fila) > 0){
             task_resume(aux->prev, &fila);
             aux = aux->next;
@@ -423,6 +425,7 @@ void acordar_tarefas_semaforo(task_t *fila){
     }
 }
 
+// Coloca uma tarefa para dormir
 void task_sleep (int t){
 
     #ifdef DEBUG
@@ -434,59 +437,64 @@ void task_sleep (int t){
     task_suspend(&fila_adormecidas);
 }
 
+// testa o valor do semaforo e se 1 ele desce e não suspende a tarefa
 int sem_down(semaphore_t *s){
 
     if(!s || s->destruido)
         return -1;
     
-    if(s->lock <= 0)
+    if(s->lock <= 0) // Se estiver no estado para ser suspendido, suspende-se
         task_suspend(&s->fila_sem);
 
-    s->lock -= 1;
+    s->lock -= 1; // Diminui o semaforo
 
-    while (__sync_fetch_and_or (&s->lock, 0));
+    if(s->lock <= 1)
+        while (__sync_fetch_and_or (&s->lock, 0)); // Testa se o valor de semaforo é zero, se menor trava e faz busy wait
 
     if(!s)
-        return -1;
+        return -1; // Retorna caso de erro do semaforo
     return 0;
 }
 
+// Adiciona o valor do semaforo e acorda uma tarefa para executar
 int sem_up(semaphore_t *s){
 
     if(!s || s->destruido)
         return -1;
 
-    if(queue_size((queue_t*) s->fila_sem) > 0)
+    if(queue_size((queue_t*) s->fila_sem) > 0) // Se houver algo na fila acorda o primeiro elemento
         task_resume(s->fila_sem, &s->fila_sem);
 
-    (s->lock) += 1 ;
+    (s->lock) += 1 ; // Incrementa o semaforo
     return 0;
 }
 
+// Inicializador do semaforo com o valor passado
 int sem_init (semaphore_t *s, int value){
     
     if(!s)
         return -1;
 
-    semaforos_existem += 1;
+    semaforos_existem += 1; // Para saber se existem semaforos e não matar o dispatcher
 
-    s->destruido = 0;
+    s->destruido = 0; 
     s->lock = value;
     s->fila_sem = NULL;
 
     return 0;
 }
 
+// Destroi o semaforo passado e acorda todas as suas tarefas 
 int sem_destroy (semaphore_t *s){
 
     if(!s || s->destruido)
         return -1;
 
-    s->lock += queue_size((queue_t*) s->fila_sem);
+    s->lock += queue_size((queue_t*) s->fila_sem); // Aumenta o valor do semaforo na quantidade de tarefas acordadas
 
-    acordar_tarefas_semaforo(s->fila_sem);
+    acordar_tarefas_semaforo(s->fila_sem); // Acorda todas as tarefas do semaforo
 
-    semaforos_existem -= 1;
+    semaforos_existem -= 1; // Diminui a quantidade de semaforos no sistema
 
     s->destruido = 1;
     s->fila_sem = NULL;
@@ -496,6 +504,7 @@ int sem_destroy (semaphore_t *s){
 
 }
 
+// Inicializa uma fila de mensagens com o valor maximo de mensagens na fila e seus tamanhos respectivos
 int mqueue_init (mqueue_t *queue, int max, int size){
     
     if(!queue)
@@ -506,11 +515,14 @@ int mqueue_init (mqueue_t *queue, int max, int size){
     queue->max_msgs = max;
     queue->msg_size = size;
     queue->destruido = 0;
+    sem_init(&queue->s_escrita, 1);
+    sem_init(&queue->s_leitura, 0);
 
     return 0;
 
 }
 
+// Destroi uma fila de mensagens setando seu valor pra destruido
 int mqueue_destroy (mqueue_t *queue){
 
     if(!queue)
@@ -519,40 +531,46 @@ int mqueue_destroy (mqueue_t *queue){
         return -2;
     
     queue->destruido = 1;
-    queue->fila = NULL;
     queue->max_msgs = 0;
     queue->msg_size = 0;
+
+    sem_destroy(&queue->s_escrita);
+    sem_destroy(&queue->s_leitura);
 
     return 0;
 
 }
 
+// Envia uma mensagem para uma fila de mensagens atraves de um buffer passado
 int mqueue_send (mqueue_t *queue, void *msg){
+
+    // Cria um novo elemento a ser inserido na fila
+    fila_msg_t *mensagem = malloc(sizeof(fila_msg_t));
+    mensagem->msg = malloc(queue->msg_size);
 
     if(!queue)
         return -1;
     if(queue->destruido)
         return -2;
 
-    fila_msg_t *mensagem = malloc(sizeof(struct fila_msg_t));
-    mensagem->prev = NULL;
-    mensagem->next = NULL;
-    mensagem->msg = malloc(queue->msg_size);
-
-    if(queue_size((queue_t *) queue->fila) > queue->max_msgs){
-        sem_down(&s_send);
+    if(queue_size((queue_t *) queue->fila) > queue->max_msgs){ // Caso a fila esteja lotada espera através do semaforo
+        sem_down(&queue->s_escrita);
 
         sem_down(&s_buffer);
         memcpy(mensagem->msg, msg, queue->msg_size);
-        queue_append((queue_t **) queue->fila, (queue_t *) mensagem);
+        //bcopy(msg, mensagem->msg, queue->msg_size); // Copia a mensagem do buffer para a novo elemento
+        queue_append((queue_t **) &queue->fila, (queue_t *) mensagem); // Adiciona o elemento na fila passada
         sem_up(&s_buffer);
     }else{
         sem_down(&s_buffer);
         memcpy(mensagem->msg, msg, queue->msg_size);
-        queue_append((queue_t **) queue->fila, (queue_t *) mensagem);
+        //bcopy(msg, mensagem->msg, queue->msg_size); // Copia a mensagem do buffer para a novo elemento
+        queue_append((queue_t **) &queue->fila, (queue_t *) mensagem); // Adiciona o elemento na fila passada
         sem_up(&s_buffer);
     }
-    sem_up(&s_receiver);
+    sem_up(&queue->s_leitura);
+
+    //free(mensagem);
 
     return 0;
 }
@@ -565,19 +583,23 @@ int mqueue_recv (mqueue_t *queue, void *msg){
         return -2;
 
     if(queue_size((queue_t *) queue->fila) <= 0){
-        sem_down(&s_receiver);
-
+        sem_down(&queue->s_leitura);
+        
         sem_down(&s_buffer);
         memcpy(msg, queue->fila->msg, queue->msg_size);
-        queue_remove((queue_t **) queue->fila, (queue_t *) queue->fila);
+        antigo = queue->fila;
+        aux = queue->fila->next;
+        queue_remove((queue_t **) &queue->fila, (queue_t *) antigo);
+        queue->fila = aux;
         sem_up(&s_buffer);
     }else{
         sem_down(&s_buffer);
         memcpy(msg, queue->fila->msg, queue->msg_size);
-        queue_remove((queue_t **) queue->fila, (queue_t *) queue->fila);
+        queue->fila = queue->fila->next;
+        queue_remove((queue_t **) &queue->fila, (queue_t *) antigo);
         sem_up(&s_buffer);
     }
-    sem_up(&s_send);
+    sem_up(&queue->s_escrita);
 
     return 0;
 
