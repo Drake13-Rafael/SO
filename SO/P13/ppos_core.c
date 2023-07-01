@@ -5,10 +5,11 @@
 
 // Demonstração das funções POSIX de troca de contexto (ucontext.h).
 
-// cc -Wall -o teste -DDEBUG ppos_core.c teste.c queue.c -lm
+// cc -Wall -o teste queue.c ppos_core.c ppos_disk.c disk.c pingpong-disco.c -lrt -lm
 
 #include "ppos.h"
 #include "queue.h"
+#include "ppos_disk.h"
 
 #include <stdio.h>
 #include <stdlib.h>
